@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<full-backup-content>
+    <exclude domain="file" path="datastore/circadia_settings.preferences_pb" />
+    <exclude domain="database" path="circadia_database" />
+</full-backup-content>

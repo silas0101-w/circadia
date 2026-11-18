@@ -1,0 +1,13 @@
+<resources>
+    <string name="app_name">Circadia</string>
+    <string name="nav_today">Today</string>
+    <string name="nav_history">History</string>
+    <string name="nav_health_sync">Health Sync</string>
+    <string name="nav_settings">Settings</string>
+    <string name="action_log_substance">Log Substance</string>
+    <string name="action_analyze_impact">Analyze Sleep Impact</string>
+    <string name="action_sync_google">Sign in with Google</string>
+    <string name="action_import_health_file">Import CSV / JSON</string>
+    <string name="action_export_json">Export JSON Backup</string>
+    <string name="action_import_json">Import JSON Backup</string>
+</resources>
