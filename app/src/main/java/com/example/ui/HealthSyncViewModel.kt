@@ -70,14 +70,16 @@ class HealthSyncViewModel(
             val summary = com.example.domain.PharmacokineticsEngine.analyzeDay(
                 dateIso = eveningDateUsed,
                 entries = eveningLogs,
-                targetBedtimeMinutes = settings.targetBedtimeMinutes
+                targetBedtimeMinutes = settings.targetBedtimeMinutes,
+                decayModel = settings.decayModelMode
             )
             SleepCorrelationItem(
                 sleepSession = session,
                 eveningDateIso = eveningDateUsed,
                 disruptionScore = summary.disruptionScore,
                 loggedSubstancesSummary = eveningLogs.map {
-                    "${it.substanceName} (${it.dosageAmount.toInt()} ${it.dosageUnit})"
+                    val doseStr = com.example.ui.components.formatCompactAmount(it.dosageAmount)
+                    "${it.substanceName} ($doseStr ${it.dosageUnit})"
                 }
             )
         }
@@ -96,6 +98,7 @@ class HealthSyncViewModel(
     )
 
     fun startGoogleFitOAuth() {
+        if (_isWorking.value) return
         viewModelScope.launch {
             _errorMessage.value = null
             _statusMessage.value = null
@@ -147,6 +150,7 @@ class HealthSyncViewModel(
     }
 
     fun syncGoogleFitNow() {
+        if (_isWorking.value) return
         viewModelScope.launch {
             _isWorking.value = true
             _errorMessage.value = null
@@ -164,6 +168,7 @@ class HealthSyncViewModel(
     }
 
     fun disconnectGoogleFit() {
+        if (_isWorking.value) return
         viewModelScope.launch {
             healthSyncRepo.disconnectGoogleFit()
             _statusMessage.value = "Signed out of Google."
@@ -172,6 +177,7 @@ class HealthSyncViewModel(
     }
 
     fun importHealthFile(context: Context, uri: Uri) {
+        if (_isWorking.value) return
         viewModelScope.launch {
             _isWorking.value = true
             _errorMessage.value = null

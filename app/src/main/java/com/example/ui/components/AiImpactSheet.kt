@@ -35,12 +35,17 @@ import androidx.compose.material.icons.filled.Biotech
 import androidx.compose.material.icons.filled.CheckCircleOutline
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Update
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -48,17 +53,25 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.example.data.local.SubstanceLogEntity
+import com.example.data.remote.AI_STUDIO_BILLING_URL
+import com.example.data.remote.AiFailureKind
 import com.example.ui.AiAnalysisUiState
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -68,9 +81,11 @@ fun AiImpactSheet(
     isStale: Boolean = false,
     onDismiss: () -> Unit,
     onRetryWithGemini: (SubstanceLogEntity?) -> Unit,
-    onRegenerate: (String) -> Unit
+    onRegenerate: (String) -> Unit,
+    onOpenSettings: () -> Unit = {}
 ) {
     if (aiState is AiAnalysisUiState.Idle) return
+    val uriHandler = LocalUriHandler.current
 
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     ModalBottomSheet(
@@ -142,6 +157,9 @@ fun AiImpactSheet(
                         }
 
                         is AiAnalysisUiState.Error -> {
+                            var showTechnicalDetails by remember(state.message, state.technicalDetails) {
+                                mutableStateOf(false)
+                            }
                             Card(
                                 colors = CardDefaults.cardColors(
                                     containerColor = MaterialTheme.colorScheme.errorContainer
@@ -172,25 +190,145 @@ fun AiImpactSheet(
                                         style = MaterialTheme.typography.bodyMedium,
                                         color = MaterialTheme.colorScheme.onErrorContainer
                                     )
+
+                                    if (!state.technicalDetails.isNullOrBlank()) {
+                                        TextButton(
+                                            onClick = { showTechnicalDetails = !showTechnicalDetails },
+                                            modifier = Modifier
+                                                .heightIn(min = 48.dp)
+                                                .testTag("toggle_ai_error_details")
+                                        ) {
+                                            Icon(
+                                                imageVector = if (showTechnicalDetails) {
+                                                    Icons.Default.ExpandLess
+                                                } else {
+                                                    Icons.Default.ExpandMore
+                                                },
+                                                contentDescription = if (showTechnicalDetails) {
+                                                    "Hide technical details"
+                                                } else {
+                                                    "Show technical details"
+                                                },
+                                                tint = MaterialTheme.colorScheme.onErrorContainer
+                                            )
+                                            Spacer(Modifier.width(6.dp))
+                                            Text(
+                                                text = if (showTechnicalDetails) {
+                                                    "Hide Technical Details"
+                                                } else {
+                                                    "Show Technical Details"
+                                                },
+                                                color = MaterialTheme.colorScheme.onErrorContainer
+                                            )
+                                        }
+
+                                        AnimatedVisibility(
+                                            visible = showTechnicalDetails,
+                                            enter = expandVertically(tween(200)) + fadeIn(tween(180)),
+                                            exit = shrinkVertically(tween(180)) + fadeOut(tween(140))
+                                        ) {
+                                            Surface(
+                                                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f),
+                                                shape = RoundedCornerShape(10.dp),
+                                                border = BorderStroke(
+                                                    1.dp,
+                                                    MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.25f)
+                                                ),
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .testTag("ai_error_technical_details")
+                                            ) {
+                                                Text(
+                                                    text = state.technicalDetails,
+                                                    style = MaterialTheme.typography.bodySmall.copy(
+                                                        fontFamily = FontFamily.Monospace
+                                                    ),
+                                                    color = MaterialTheme.colorScheme.onSurface,
+                                                    modifier = Modifier.padding(12.dp)
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            val isBillingDepleted = state.failureKind == AiFailureKind.BILLING_DEPLETED ||
+                                state.billingUrl != null
+                            val showSettingsAction = isBillingDepleted ||
+                                state.failureKind == AiFailureKind.AUTH_OR_APPCHECK ||
+                                state.failureKind == AiFailureKind.CONFIGURATION_REQUIRED
+
+                            if (isBillingDepleted) {
+                                val targetBillingUrl = state.billingUrl?.takeIf {
+                                    it.startsWith("https://ai.studio/")
+                                } ?: AI_STUDIO_BILLING_URL
+                                Button(
+                                    onClick = {
+                                        runCatching { uriHandler.openUri(targetBillingUrl) }
+                                    },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .heightIn(min = 48.dp)
+                                        .testTag("open_ai_billing_button")
+                                ) {
+                                    Icon(Icons.Default.OpenInNew, contentDescription = null)
+                                    Spacer(Modifier.width(8.dp))
+                                    Text("Open AI Studio Billing")
+                                }
+                            }
+
+                            if (showSettingsAction) {
+                                FilledTonalButton(
+                                    onClick = {
+                                        onDismiss()
+                                        onOpenSettings()
+                                    },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .heightIn(min = 48.dp)
+                                        .testTag("open_ai_settings_button")
+                                ) {
+                                    Icon(Icons.Default.Settings, contentDescription = null)
+                                    Spacer(Modifier.width(8.dp))
+                                    Text("Open AI Settings (Switch Engine or Key)")
                                 }
                             }
 
                             val (retryInteraction, retryScale) = rememberPressScale()
-                            Button(
-                                onClick = { onRetryWithGemini(state.lastEntry) },
-                                interactionSource = retryInteraction,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .heightIn(min = 48.dp)
-                                    .graphicsLayer {
-                                        scaleX = retryScale
-                                        scaleY = retryScale
-                                    }
-                                    .testTag("retry_with_gemini_button")
-                            ) {
-                                Icon(Icons.Default.AutoAwesome, contentDescription = null)
-                                Spacer(Modifier.width(8.dp))
-                                Text("Analyze with Built-in Gemini Fallback")
+                            if (isBillingDepleted || state.failureKind == AiFailureKind.CONFIGURATION_REQUIRED) {
+                                OutlinedButton(
+                                    onClick = { onRetryWithGemini(state.lastEntry) },
+                                    interactionSource = retryInteraction,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .heightIn(min = 48.dp)
+                                        .graphicsLayer {
+                                            scaleX = retryScale
+                                            scaleY = retryScale
+                                        }
+                                        .testTag("retry_with_gemini_button")
+                                ) {
+                                    Icon(Icons.Default.AutoAwesome, contentDescription = null)
+                                    Spacer(Modifier.width(8.dp))
+                                    Text("Retry with Built-in Gemini")
+                                }
+                            } else {
+                                Button(
+                                    onClick = { onRetryWithGemini(state.lastEntry) },
+                                    interactionSource = retryInteraction,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .heightIn(min = 48.dp)
+                                        .graphicsLayer {
+                                            scaleX = retryScale
+                                            scaleY = retryScale
+                                        }
+                                        .testTag("retry_with_gemini_button")
+                                ) {
+                                    Icon(Icons.Default.AutoAwesome, contentDescription = null)
+                                    Spacer(Modifier.width(8.dp))
+                                    Text("Retry with Built-in Gemini")
+                                }
                             }
                         }
 

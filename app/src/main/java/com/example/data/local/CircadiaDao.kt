@@ -4,6 +4,7 @@ import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.Transaction
 import androidx.room.Update
 import kotlinx.coroutines.flow.Flow
 
@@ -58,9 +59,35 @@ interface CircadiaDao {
     @Query("SELECT * FROM ai_impact_reports WHERE dateIso = :dateIso ORDER BY createdAtMillis DESC")
     fun observeReportsForDate(dateIso: String): Flow<List<AiImpactReportEntity>>
 
+    @Query("SELECT * FROM ai_impact_reports ORDER BY createdAtMillis DESC")
+    fun observeAllReports(): Flow<List<AiImpactReportEntity>>
+
+    @Query("SELECT * FROM ai_impact_reports ORDER BY createdAtMillis DESC")
+    suspend fun getAllReportsOnce(): List<AiImpactReportEntity>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertReport(report: AiImpactReportEntity)
 
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertReports(reports: List<AiImpactReportEntity>)
+
     @Query("DELETE FROM ai_impact_reports WHERE scopeKey = :scopeKey")
     suspend fun deleteReport(scopeKey: String)
+
+    // Maintenance / Reset
+    @Query("DELETE FROM substance_logs")
+    suspend fun clearAllSubstanceLogs()
+
+    @Query("DELETE FROM sleep_sessions")
+    suspend fun clearAllSleepSessions()
+
+    @Query("DELETE FROM ai_impact_reports")
+    suspend fun clearAllAiReports()
+
+    @Transaction
+    suspend fun clearAllTablesData() {
+        clearAllSubstanceLogs()
+        clearAllSleepSessions()
+        clearAllAiReports()
+    }
 }

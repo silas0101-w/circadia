@@ -8,8 +8,10 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.example.data.remote.NvidiaNimService
+import com.example.domain.DecayModelMode
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -33,6 +35,12 @@ enum class AiEngineMode(val label: String, val description: String) {
     )
 }
 
+data class PendingCloudDeletions(
+    val logDocIds: Set<String> = emptySet(),
+    val sleepDocIds: Set<String> = emptySet(),
+    val reportDocIds: Set<String> = emptySet()
+)
+
 data class UserSettings(
     val nvidiaApiKey: String = "",
     val nvidiaModelId: String = DEFAULT_NVIDIA_MODEL,
@@ -44,13 +52,24 @@ data class UserSettings(
     val googleTokenExpiresAtMillis: Long = 0L,
     val googleAccountSignedIn: Boolean = false,
     val pendingOAuthCodeVerifier: String = "",
-    val pendingOAuthState: String = ""
+    val pendingOAuthState: String = "",
+    val persistentDbEnabled: Boolean = false,
+    val cloudSyncEnabled: Boolean = false,
+    val lastCloudDbSyncMillis: Long = 0L,
+    val firebaseUserEmail: String = "",
+    val decayModelMode: DecayModelMode = DecayModelMode.ONSET_RAMP
 ) {
+    fun isOAuthTokenValid(nowMillis: Long = System.currentTimeMillis()): Boolean =
+        googleAccessToken.isNotBlank() && nowMillis < googleTokenExpiresAtMillis - 30_000L
+
+    fun isGoogleConnectedAt(nowMillis: Long = System.currentTimeMillis()): Boolean =
+        isOAuthTokenValid(nowMillis) || googleAccountSignedIn
+
     val hasValidOAuthToken: Boolean
-        get() = googleAccessToken.isNotBlank() && System.currentTimeMillis() < googleTokenExpiresAtMillis - 30_000L
+        get() = isOAuthTokenValid()
 
     val isGoogleConnected: Boolean
-        get() = hasValidOAuthToken || googleAccountSignedIn
+        get() = isGoogleConnectedAt()
 
     companion object {
         const val DEFAULT_NVIDIA_MODEL = "meta/llama-3.3-70b-instruct"
@@ -72,6 +91,14 @@ class UserPreferencesRepository(private val context: Context) {
         val GOOGLE_ACCOUNT_SIGNED_IN = booleanPreferencesKey("google_account_signed_in")
         val PENDING_OAUTH_VERIFIER = stringPreferencesKey("pending_oauth_verifier")
         val PENDING_OAUTH_STATE = stringPreferencesKey("pending_oauth_state")
+        val PERSISTENT_DB_ENABLED = booleanPreferencesKey("persistent_db_enabled")
+        val CLOUD_SYNC_ENABLED = booleanPreferencesKey("cloud_sync_enabled")
+        val LAST_CLOUD_DB_SYNC_MILLIS = longPreferencesKey("last_cloud_db_sync_millis")
+        val FIREBASE_USER_EMAIL = stringPreferencesKey("firebase_user_email")
+        val DECAY_MODEL_MODE = stringPreferencesKey("decay_model_mode")
+        val PENDING_DELETED_LOGS = stringSetPreferencesKey("pending_deleted_cloud_logs")
+        val PENDING_DELETED_SLEEP = stringSetPreferencesKey("pending_deleted_cloud_sleep")
+        val PENDING_DELETED_REPORTS = stringSetPreferencesKey("pending_deleted_cloud_reports")
     }
 
     val settingsFlow: Flow<UserSettings> = context.circadiaDataStore.data.map { prefs ->
@@ -82,6 +109,10 @@ class UserPreferencesRepository(private val context: Context) {
         val safeEndpoint = runCatching {
             NvidiaNimService.validateEndpointUrl(rawEndpoint).toString()
         }.getOrDefault(UserSettings.DEFAULT_NVIDIA_ENDPOINT)
+
+        val decayModeName = prefs[Keys.DECAY_MODEL_MODE] ?: DecayModelMode.ONSET_RAMP.name
+        val decayMode = DecayModelMode.entries.find { it.name == decayModeName }
+            ?: DecayModelMode.ONSET_RAMP
 
         UserSettings(
             nvidiaApiKey = KeystoreCrypto.decrypt(prefs[Keys.NVIDIA_API_KEY] ?: ""),
@@ -95,11 +126,81 @@ class UserPreferencesRepository(private val context: Context) {
             googleTokenExpiresAtMillis = prefs[Keys.GOOGLE_TOKEN_EXPIRES_AT] ?: 0L,
             googleAccountSignedIn = prefs[Keys.GOOGLE_ACCOUNT_SIGNED_IN] ?: false,
             pendingOAuthCodeVerifier = KeystoreCrypto.decrypt(prefs[Keys.PENDING_OAUTH_VERIFIER] ?: ""),
-            pendingOAuthState = KeystoreCrypto.decrypt(prefs[Keys.PENDING_OAUTH_STATE] ?: "")
+            pendingOAuthState = KeystoreCrypto.decrypt(prefs[Keys.PENDING_OAUTH_STATE] ?: ""),
+            persistentDbEnabled = prefs[Keys.PERSISTENT_DB_ENABLED] ?: false,
+            cloudSyncEnabled = prefs[Keys.CLOUD_SYNC_ENABLED] ?: false,
+            lastCloudDbSyncMillis = prefs[Keys.LAST_CLOUD_DB_SYNC_MILLIS] ?: 0L,
+            firebaseUserEmail = prefs[Keys.FIREBASE_USER_EMAIL] ?: "",
+            decayModelMode = decayMode
         )
     }
 
     suspend fun getCurrentSettings(): UserSettings = settingsFlow.first()
+
+    suspend fun getPendingCloudDeletions(): PendingCloudDeletions {
+        val prefs = context.circadiaDataStore.data.first()
+        return PendingCloudDeletions(
+            logDocIds = prefs[Keys.PENDING_DELETED_LOGS] ?: emptySet(),
+            sleepDocIds = prefs[Keys.PENDING_DELETED_SLEEP] ?: emptySet(),
+            reportDocIds = prefs[Keys.PENDING_DELETED_REPORTS] ?: emptySet()
+        )
+    }
+
+    suspend fun addPendingDeletedLog(docId: String) {
+        if (docId.isBlank()) return
+        context.circadiaDataStore.edit { prefs ->
+            val current = prefs[Keys.PENDING_DELETED_LOGS] ?: emptySet()
+            prefs[Keys.PENDING_DELETED_LOGS] = (current + docId).take(500).toSet()
+        }
+    }
+
+    suspend fun removePendingDeletedLogs(docIds: Set<String>) {
+        if (docIds.isEmpty()) return
+        context.circadiaDataStore.edit { prefs ->
+            val current = prefs[Keys.PENDING_DELETED_LOGS] ?: emptySet()
+            prefs[Keys.PENDING_DELETED_LOGS] = current - docIds
+        }
+    }
+
+    suspend fun addPendingDeletedSleep(docId: String) {
+        if (docId.isBlank()) return
+        context.circadiaDataStore.edit { prefs ->
+            val current = prefs[Keys.PENDING_DELETED_SLEEP] ?: emptySet()
+            prefs[Keys.PENDING_DELETED_SLEEP] = (current + docId).take(500).toSet()
+        }
+    }
+
+    suspend fun removePendingDeletedSleep(docIds: Set<String>) {
+        if (docIds.isEmpty()) return
+        context.circadiaDataStore.edit { prefs ->
+            val current = prefs[Keys.PENDING_DELETED_SLEEP] ?: emptySet()
+            prefs[Keys.PENDING_DELETED_SLEEP] = current - docIds
+        }
+    }
+
+    suspend fun addPendingDeletedReport(docId: String) {
+        if (docId.isBlank()) return
+        context.circadiaDataStore.edit { prefs ->
+            val current = prefs[Keys.PENDING_DELETED_REPORTS] ?: emptySet()
+            prefs[Keys.PENDING_DELETED_REPORTS] = (current + docId).take(500).toSet()
+        }
+    }
+
+    suspend fun removePendingDeletedReports(docIds: Set<String>) {
+        if (docIds.isEmpty()) return
+        context.circadiaDataStore.edit { prefs ->
+            val current = prefs[Keys.PENDING_DELETED_REPORTS] ?: emptySet()
+            prefs[Keys.PENDING_DELETED_REPORTS] = current - docIds
+        }
+    }
+
+    suspend fun clearAllPendingCloudDeletions() {
+        context.circadiaDataStore.edit { prefs ->
+            prefs.remove(Keys.PENDING_DELETED_LOGS)
+            prefs.remove(Keys.PENDING_DELETED_SLEEP)
+            prefs.remove(Keys.PENDING_DELETED_REPORTS)
+        }
+    }
 
     suspend fun updateNvidiaSettings(
         apiKey: String,
@@ -121,6 +222,39 @@ class UserPreferencesRepository(private val context: Context) {
     suspend fun updateTargetBedtime(minutesOfDay: Int) {
         context.circadiaDataStore.edit { prefs ->
             prefs[Keys.TARGET_BEDTIME_MINUTES] = minutesOfDay.coerceIn(0, 23 * 60 + 59)
+        }
+    }
+
+    suspend fun updateDecayModelMode(mode: DecayModelMode) {
+        context.circadiaDataStore.edit { prefs ->
+            prefs[Keys.DECAY_MODEL_MODE] = mode.name
+        }
+    }
+
+    suspend fun setPersistentDbEnabled(enabled: Boolean) {
+        context.circadiaDataStore.edit { prefs ->
+            prefs[Keys.PERSISTENT_DB_ENABLED] = enabled
+            if (!enabled) {
+                prefs[Keys.CLOUD_SYNC_ENABLED] = false
+            }
+        }
+    }
+
+    suspend fun setCloudSyncEnabled(enabled: Boolean) {
+        context.circadiaDataStore.edit { prefs ->
+            prefs[Keys.CLOUD_SYNC_ENABLED] = enabled
+        }
+    }
+
+    suspend fun updateLastCloudDbSync(timestampMillis: Long) {
+        context.circadiaDataStore.edit { prefs ->
+            prefs[Keys.LAST_CLOUD_DB_SYNC_MILLIS] = timestampMillis
+        }
+    }
+
+    suspend fun updateFirebaseUserEmail(email: String) {
+        context.circadiaDataStore.edit { prefs ->
+            prefs[Keys.FIREBASE_USER_EMAIL] = email.trim()
         }
     }
 

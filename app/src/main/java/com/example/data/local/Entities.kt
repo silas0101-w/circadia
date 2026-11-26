@@ -2,6 +2,12 @@ package com.example.data.local
 
 import androidx.room.Entity
 import androidx.room.PrimaryKey
+import java.util.Locale
+import java.util.UUID
+import kotlin.math.round
+
+fun generateLogSyncId(): String =
+    "log_" + UUID.randomUUID().toString().replace("-", "").take(24)
 
 @Entity(tableName = "substance_logs")
 data class SubstanceLogEntity(
@@ -16,8 +22,35 @@ data class SubstanceLogEntity(
     val halfLifeHours: Double,
     val disruptionWeight: Double,
     val notes: String = "",
-    val updatedAtMillis: Long = System.currentTimeMillis()
-)
+    val updatedAtMillis: Long = System.currentTimeMillis(),
+    val syncId: String = generateLogSyncId()
+) {
+    fun resolvedSyncId(): String {
+        val cleaned = syncId.trim()
+            .replace(Regex("[^a-zA-Z0-9_\\-]"), "_")
+            .take(128)
+        return when {
+            cleaned.isNotBlank() -> cleaned
+            id > 0L -> "log_$id"
+            else -> generateLogSyncId()
+        }
+    }
+
+    fun contentFingerprint(): String {
+        val doseCents = if (dosageAmount.isFinite()) round(dosageAmount * 100.0).toLong() else 0L
+        return buildString {
+            append(dateIso.trim())
+            append('|')
+            append(substanceId.trim().lowercase(Locale.US))
+            append('|')
+            append(takenAtMillis)
+            append('|')
+            append(doseCents)
+            append('|')
+            append(dosageUnit.trim().lowercase(Locale.US))
+        }
+    }
+}
 
 @Entity(tableName = "sleep_sessions")
 data class SleepSessionEntity(

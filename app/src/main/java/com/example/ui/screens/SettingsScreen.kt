@@ -29,28 +29,36 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bedtime
 import androidx.compose.material.icons.filled.CloudDone
 import androidx.compose.material.icons.filled.CloudOff
+import androidx.compose.material.icons.filled.CloudSync
+import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.LinkOff
+import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.filled.Upload
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TimePicker
@@ -60,6 +68,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -71,10 +80,15 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import com.example.data.local.AiEngineMode
 import com.example.data.local.UserSettings
+import com.example.data.remote.GoogleCredentialAuthHelper
 import com.example.data.remote.GoogleFitRestService
+import com.example.data.repository.DatabaseStats
 import com.example.domain.DateTimeUtils
+import com.example.ui.CloudAuthState
 import com.example.ui.HealthSyncUiState
+import com.example.ui.components.GeminiLoaderSize
 import com.example.ui.components.GeminiSyncStatusBanner
+import com.example.ui.components.GeminiThreeDotsLoader
 import com.example.ui.components.GoogleSignInButton
 import com.example.ui.components.rememberPressScale
 
@@ -82,9 +96,24 @@ import com.example.ui.components.rememberPressScale
 @Composable
 fun SettingsScreen(
     settings: UserSettings,
+    databaseStats: DatabaseStats,
+    diskDatabaseStats: DatabaseStats,
+    cloudAuthState: CloudAuthState,
+    isPersistenceBusy: Boolean,
+    cloudSyncWorking: Boolean,
+    showDisablePersistenceDialog: Boolean,
     healthSyncState: HealthSyncUiState,
     feedbackMessage: String?,
     onClearFeedback: () -> Unit,
+    onTogglePersistentDatabase: (Boolean) -> Unit,
+    onDismissDisablePersistenceDialog: () -> Unit,
+    onConfirmDisablePersistence: (clearSavedData: Boolean, clearCloudData: Boolean) -> Unit,
+    onToggleCloudSync: (Boolean) -> Unit,
+    onSyncCloudNow: () -> Unit,
+    onClearSavedDatabase: (clearCloudData: Boolean) -> Unit,
+    onFirebaseGoogleSignedIn: (String) -> Unit,
+    onFirebaseAuthMessage: (String) -> Unit,
+    onFirebaseSignedOut: () -> Unit,
     onSaveBedtime: (Int) -> Unit,
     onSaveAiSettings: (apiKey: String, modelId: String, endpointUrl: String, mode: AiEngineMode) -> Unit,
     onSaveGoogleClientId: (String) -> Unit,
@@ -96,6 +125,7 @@ fun SettingsScreen(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
 
     var showAdvancedGoogleClient by remember { mutableStateOf(false) }
 
@@ -107,10 +137,12 @@ fun SettingsScreen(
     var googleClientIdInput by remember(settings.googleClientId) { mutableStateOf(settings.googleClientId) }
 
     var showBedtimePicker by remember { mutableStateOf(false) }
+    var isSigningInCloud by remember { mutableStateOf(false) }
+    var showClearSavedDbDialog by remember { mutableStateOf(false) }
 
     LaunchedEffect(feedbackMessage) {
         if (feedbackMessage != null) {
-            kotlinx.coroutines.delay(3500L)
+            kotlinx.coroutines.delay(4000L)
             onClearFeedback()
         }
     }
@@ -140,7 +172,7 @@ fun SettingsScreen(
                     color = MaterialTheme.colorScheme.onBackground
                 )
                 Text(
-                    text = "Configure target bedtime, NVIDIA NIM & Gemini AI, Google OAuth, and backups",
+                    text = "Configure database storage, target bedtime, AI engines, Google OAuth, and backups",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -165,6 +197,298 @@ fun SettingsScreen(
                             color = MaterialTheme.colorScheme.onSecondaryContainer,
                             modifier = Modifier.padding(12.dp)
                         )
+                    }
+                }
+            }
+        }
+
+        // Database & Persistence Card (Opt-in, Session-Only by default)
+        item(key = "database_persistence_card") {
+            val totalDiskRecords = diskDatabaseStats.logCount +
+                diskDatabaseStats.sleepSessionCount +
+                diskDatabaseStats.reportCount
+
+            Card(
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                border = BorderStroke(
+                    1.dp,
+                    if (settings.persistentDbEnabled) {
+                        MaterialTheme.colorScheme.secondary.copy(alpha = 0.6f)
+                    } else {
+                        MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)
+                    }
+                ),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("database_persistence_card")
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(
+                            modifier = Modifier.weight(1f),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Icon(
+                                imageVector = if (settings.persistentDbEnabled) {
+                                    Icons.Default.Storage
+                                } else {
+                                    Icons.Default.Memory
+                                },
+                                contentDescription = null,
+                                tint = if (settings.persistentDbEnabled) {
+                                    MaterialTheme.colorScheme.secondary
+                                } else {
+                                    MaterialTheme.colorScheme.primary
+                                }
+                            )
+                            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                Text(
+                                    text = "Database & Persistence",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Text(
+                                    text = if (settings.persistentDbEnabled) {
+                                        "Persistent SQLite Active"
+                                    } else {
+                                        "Session-Only Mode (Default)"
+                                    },
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = if (settings.persistentDbEnabled) {
+                                        MaterialTheme.colorScheme.secondary
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                    }
+                                )
+                            }
+                        }
+                        Switch(
+                            checked = settings.persistentDbEnabled,
+                            onCheckedChange = onTogglePersistentDatabase,
+                            enabled = !isPersistenceBusy,
+                            modifier = Modifier.testTag("toggle_persistent_database")
+                        )
+                    }
+
+                    Text(
+                        text = if (settings.persistentDbEnabled) {
+                            "Logs, imported sleep sessions, and AI impact reports are saved on-device across restarts. " +
+                                "Active records: ${databaseStats.logCount} logs · ${databaseStats.sleepSessionCount} sleep · ${databaseStats.reportCount} reports."
+                        } else {
+                            "Storage is off by default: entries live only in memory for this session. " +
+                                "Turn this on to migrate current session logs (${databaseStats.logCount} logs, ${databaseStats.sleepSessionCount} sleep) to an on-device SQLite database."
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    AnimatedVisibility(visible = !settings.persistentDbEnabled && totalDiskRecords > 0) {
+                        Surface(
+                            color = MaterialTheme.colorScheme.surfaceContainer,
+                            shape = MaterialTheme.shapes.small,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "$totalDiskRecords saved record(s) preserved on disk from an earlier session.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                TextButton(
+                                    onClick = { showClearSavedDbDialog = true },
+                                    modifier = Modifier
+                                        .heightIn(min = 48.dp)
+                                        .testTag("clear_preserved_disk_data_button")
+                                ) {
+                                    Text("Clear")
+                                }
+                            }
+                        }
+                    }
+
+                    AnimatedVisibility(visible = isPersistenceBusy) {
+                        GeminiSyncStatusBanner(message = "Updating database storage mode...")
+                    }
+
+                    AnimatedVisibility(
+                        visible = settings.persistentDbEnabled,
+                        enter = expandVertically(
+                            spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessMediumLow)
+                        ) + fadeIn(tween(220)),
+                        exit = shrinkVertically(tween(180)) + fadeOut(tween(140))
+                    ) {
+                        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(
+                                    modifier = Modifier.weight(1f),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.CloudSync,
+                                        contentDescription = null,
+                                        tint = if (settings.cloudSyncEnabled) {
+                                            MaterialTheme.colorScheme.secondary
+                                        } else {
+                                            MaterialTheme.colorScheme.onSurfaceVariant
+                                        }
+                                    )
+                                    Column {
+                                        Text(
+                                            text = "Optional Cloud Database Sync",
+                                            style = MaterialTheme.typography.titleSmall,
+                                            color = MaterialTheme.colorScheme.onSurface
+                                        )
+                                        Text(
+                                            text = if (cloudAuthState.isSignedIn) {
+                                                "Account: ${cloudAuthState.accountLabel}"
+                                            } else {
+                                                "Sign in with Google to sync SQLite records to Cloud Firestore"
+                                            },
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                                Switch(
+                                    checked = settings.cloudSyncEnabled,
+                                    onCheckedChange = onToggleCloudSync,
+                                    enabled = cloudAuthState.isSignedIn && !cloudSyncWorking && !isPersistenceBusy,
+                                    modifier = Modifier.testTag("toggle_cloud_database_sync")
+                                )
+                            }
+
+                            AnimatedVisibility(visible = cloudSyncWorking || isSigningInCloud) {
+                                GeminiSyncStatusBanner(
+                                    message = if (isSigningInCloud) {
+                                        "Authenticating Google account..."
+                                    } else {
+                                        "Syncing database with Cloud Firestore..."
+                                    }
+                                )
+                            }
+
+                            if (!cloudAuthState.isSignedIn) {
+                                OutlinedButton(
+                                    onClick = {
+                                        isSigningInCloud = true
+                                        GoogleCredentialAuthHelper.signInWithGoogleInteractive(
+                                            context = context,
+                                            scope = coroutineScope,
+                                            onAuthSuccess = { email ->
+                                                isSigningInCloud = false
+                                                onFirebaseGoogleSignedIn(email)
+                                            },
+                                            onAuthCancelled = {
+                                                isSigningInCloud = false
+                                                onFirebaseAuthMessage("Google Sign-In was cancelled.")
+                                            },
+                                            onAuthError = { errMsg ->
+                                                isSigningInCloud = false
+                                                onFirebaseAuthMessage(errMsg)
+                                            }
+                                        )
+                                    },
+                                    enabled = !isSigningInCloud && !isPersistenceBusy,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .heightIn(min = 48.dp)
+                                        .testTag("cloud_sync_google_signin_button")
+                                ) {
+                                    if (isSigningInCloud) {
+                                        GeminiThreeDotsLoader(
+                                            size = GeminiLoaderSize.Compact,
+                                            description = "Signing in"
+                                        )
+                                    } else {
+                                        Text("Sign in with Google for Cloud Sync")
+                                    }
+                                }
+                            } else {
+                                if (settings.lastCloudDbSyncMillis > 0L) {
+                                    Text(
+                                        text = "Last Cloud DB sync: ${DateTimeUtils.formatTime(settings.lastCloudDbSyncMillis)}",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.secondary
+                                    )
+                                }
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    val (cloudSyncInteraction, cloudSyncScale) = rememberPressScale()
+                                    FilledTonalButton(
+                                        onClick = onSyncCloudNow,
+                                        enabled = !cloudSyncWorking && !isPersistenceBusy,
+                                        interactionSource = cloudSyncInteraction,
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .heightIn(min = 48.dp)
+                                            .graphicsLayer {
+                                                scaleX = cloudSyncScale
+                                                scaleY = cloudSyncScale
+                                            }
+                                            .testTag("sync_cloud_db_now_button")
+                                    ) {
+                                        Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
+                                        Spacer(Modifier.width(6.dp))
+                                        Text("Sync Cloud DB")
+                                    }
+                                    OutlinedButton(
+                                        onClick = {
+                                            GoogleCredentialAuthHelper.signOutFirebase(
+                                                context = context,
+                                                scope = coroutineScope,
+                                                onSignOutComplete = onFirebaseSignedOut
+                                            )
+                                        },
+                                        enabled = !cloudSyncWorking && !isPersistenceBusy,
+                                        modifier = Modifier
+                                            .heightIn(min = 48.dp)
+                                            .testTag("cloud_sync_google_signout_button")
+                                    ) {
+                                        Text("Sign Out")
+                                    }
+                                }
+                            }
+
+                            OutlinedButton(
+                                onClick = { showClearSavedDbDialog = true },
+                                enabled = !isPersistenceBusy && !cloudSyncWorking,
+                                colors = ButtonDefaults.outlinedButtonColors(
+                                    contentColor = MaterialTheme.colorScheme.error
+                                ),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(min = 48.dp)
+                                    .testTag("clear_saved_database_button")
+                            ) {
+                                Icon(Icons.Default.DeleteOutline, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(8.dp))
+                                Text("Clear Saved Database")
+                            }
+                        }
                     }
                 }
             }
@@ -257,7 +581,9 @@ fun SettingsScreen(
                                 selected = selectedMode == mode,
                                 onClick = { selectedMode = mode },
                                 label = { Text(mode.label) },
-                                modifier = Modifier.testTag("ai_mode_${mode.name}")
+                                modifier = Modifier
+                                    .heightIn(min = 48.dp)
+                                    .testTag("ai_mode_${mode.name}")
                             )
                         }
                         AnimatedContent(
@@ -461,7 +787,9 @@ fun SettingsScreen(
 
                     TextButton(
                         onClick = { showAdvancedGoogleClient = !showAdvancedGoogleClient },
-                        modifier = Modifier.testTag("toggle_advanced_google_client")
+                        modifier = Modifier
+                            .heightIn(min = 48.dp)
+                            .testTag("toggle_advanced_google_client")
                     ) {
                         Icon(
                             imageVector = if (showAdvancedGoogleClient) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
@@ -558,6 +886,133 @@ fun SettingsScreen(
                 }
             }
         }
+    }
+
+    if (showDisablePersistenceDialog) {
+        var alsoClearCloud by remember(cloudAuthState.isSignedIn) { mutableStateOf(false) }
+
+        AlertDialog(
+            onDismissRequest = onDismissDisablePersistenceDialog,
+            title = { Text("Turn Off Persistent Database?") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        text = "Choose what to do with your saved records (${databaseStats.logCount} logs, " +
+                            "${databaseStats.sleepSessionCount} sleep sessions, ${databaseStats.reportCount} AI reports):",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Text(
+                        text = "• Keep Saved Data: pauses disk saving and keeps records available in this session.\n" +
+                            "• Clear All Saved Data: deletes saved local records immediately.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    if (cloudAuthState.isSignedIn) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Checkbox(
+                                checked = alsoClearCloud,
+                                onCheckedChange = { alsoClearCloud = it },
+                                modifier = Modifier.testTag("checkbox_clear_cloud_on_disable")
+                            )
+                            Text(
+                                text = "Also delete synced Cloud Firestore records when clearing",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilledTonalButton(
+                        onClick = { onConfirmDisablePersistence(false, false) },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 48.dp)
+                            .testTag("confirm_disable_keep_data")
+                    ) {
+                        Text("Keep Saved Data")
+                    }
+                    Button(
+                        onClick = { onConfirmDisablePersistence(true, alsoClearCloud) },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.error,
+                            contentColor = MaterialTheme.colorScheme.onError
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 48.dp)
+                            .testTag("confirm_disable_clear_data")
+                    ) {
+                        Text("Clear All Saved Data")
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = onDismissDisablePersistenceDialog,
+                    modifier = Modifier.testTag("cancel_disable_persistence")
+                ) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    if (showClearSavedDbDialog) {
+        var alsoClearCloud by remember(cloudAuthState.isSignedIn) { mutableStateOf(false) }
+
+        AlertDialog(
+            onDismissRequest = { showClearSavedDbDialog = false },
+            title = { Text("Clear Saved Database?") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = "This permanently deletes all saved substance logs, sleep sessions, and AI impact reports from the local SQLite database.",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    if (cloudAuthState.isSignedIn) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Checkbox(
+                                checked = alsoClearCloud,
+                                onCheckedChange = { alsoClearCloud = it },
+                                modifier = Modifier.testTag("checkbox_clear_cloud_direct")
+                            )
+                            Text(
+                                text = "Also delete synced Cloud Firestore records",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showClearSavedDbDialog = false
+                        onClearSavedDatabase(alsoClearCloud)
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error,
+                        contentColor = MaterialTheme.colorScheme.onError
+                    ),
+                    modifier = Modifier.testTag("confirm_clear_saved_database")
+                ) {
+                    Text("Delete Records")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showClearSavedDbDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
     }
 
     if (showBedtimePicker) {

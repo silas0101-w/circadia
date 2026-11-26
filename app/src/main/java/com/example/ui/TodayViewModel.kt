@@ -7,18 +7,23 @@ import com.example.data.local.AiEngineMode
 import com.example.data.local.SubstanceLogEntity
 import com.example.data.local.UserPreferencesRepository
 import com.example.data.local.UserSettings
+import com.example.data.remote.GeminiAnalysisException
 import com.example.data.repository.ParsedAiReport
 import com.example.data.repository.SleepImpactAiRepository
 import com.example.data.repository.SleepImpactAiRepository.Companion.toParsed
 import com.example.data.repository.SubstanceRepository
 import com.example.domain.DateTimeUtils
+import com.example.domain.DayConcentrationChartModel
 import com.example.domain.DayPharmacokineticSummary
+import com.example.domain.DecayModelMode
 import com.example.domain.PharmacokineticsEngine
+import com.example.domain.StructuredSessionMetadata
+import com.example.domain.SubstanceConcentrationSeries
 import android.util.Log
-import com.example.BuildConfig
 import com.example.data.local.SafeFileReader
 import com.example.ui.components.formatCompactAmount
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -26,7 +31,10 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
@@ -34,7 +42,13 @@ sealed interface AiAnalysisUiState {
     data object Idle : AiAnalysisUiState
     data class Loading(val targetLabel: String) : AiAnalysisUiState
     data class Success(val report: ParsedAiReport) : AiAnalysisUiState
-    data class Error(val message: String, val lastEntry: SubstanceLogEntity? = null) : AiAnalysisUiState
+    data class Error(
+        val message: String,
+        val technicalDetails: String? = null,
+        val failureKind: com.example.data.remote.AiFailureKind = com.example.data.remote.AiFailureKind.UNKNOWN,
+        val billingUrl: String? = null,
+        val lastEntry: SubstanceLogEntity? = null
+    ) : AiAnalysisUiState
 }
 
 data class TodayUiState(
@@ -45,6 +59,12 @@ data class TodayUiState(
         entries = emptyList(),
         targetBedtimeMinutes = 22 * 60 + 30
     ),
+    val concentrationChartModel: DayConcentrationChartModel = PharmacokineticsEngine.buildDayConcentrationChartModel(
+        dateIso = DateTimeUtils.todayIso(),
+        entries = emptyList(),
+        targetBedtimeMinutes = 22 * 60 + 30
+    ),
+    val entryConcentrationSeries: Map<Long, SubstanceConcentrationSeries> = emptyMap(),
     val entriesByDate: Map<String, List<SubstanceLogEntity>> = emptyMap(),
     val savedDayReport: ParsedAiReport? = null,
     val isDayReportStale: Boolean = false,
@@ -53,13 +73,12 @@ data class TodayUiState(
     val nowMillis: Long = System.currentTimeMillis()
 )
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class TodayViewModel(
     private val substanceRepo: SubstanceRepository,
     private val aiRepo: SleepImpactAiRepository,
     private val prefsRepo: UserPreferencesRepository
 ) : ViewModel() {
-
-    private val todayIso = DateTimeUtils.todayIso()
 
     private val tickerFlow = flow {
         while (true) {
@@ -68,26 +87,53 @@ class TodayViewModel(
         }
     }
 
+    private val todayIsoFlow = tickerFlow
+        .map { DateTimeUtils.dateIsoFromMillis(it) }
+        .distinctUntilChanged()
+
+    private val todayReportsFlow = todayIsoFlow.flatMapLatest { activeDateIso ->
+        aiRepo.observeReportsForDate(activeDateIso)
+    }
+
     val uiState: StateFlow<TodayUiState> = combine(
         substanceRepo.observeAllLogs(),
         prefsRepo.settingsFlow,
-        aiRepo.observeReportsForDate(todayIso),
+        todayReportsFlow,
         substanceRepo.dateMutations,
         tickerFlow
     ) { allLogs, settings, reports, mutations, nowMillis ->
+        val activeTodayIso = DateTimeUtils.dateIsoFromMillis(nowMillis)
         val grouped = allLogs.groupBy { it.dateIso }
-        val todayLogs = grouped[todayIso].orEmpty().sortedBy { it.takenAtMillis }
+        val todayLogs = grouped[activeTodayIso].orEmpty().sortedBy { it.takenAtMillis }
         val summary = PharmacokineticsEngine.analyzeDay(
-            dateIso = todayIso,
+            dateIso = activeTodayIso,
             entries = todayLogs,
             targetBedtimeMinutes = settings.targetBedtimeMinutes,
-            nowMillis = nowMillis
+            nowMillis = nowMillis,
+            decayModel = settings.decayModelMode
         )
+        val chartModel = PharmacokineticsEngine.buildDayConcentrationChartModel(
+            dateIso = activeTodayIso,
+            entries = todayLogs,
+            targetBedtimeMinutes = settings.targetBedtimeMinutes,
+            nowMillis = nowMillis,
+            model = settings.decayModelMode
+        )
+        val perEntrySeries = todayLogs.mapIndexed { idx, entry ->
+            entry.id to PharmacokineticsEngine.generateEntryConcentrationCurve(
+                entry = entry,
+                bedtimeMillis = summary.bedtimeMillis,
+                nowMillis = nowMillis,
+                model = settings.decayModelMode,
+                seriesColorIndex = idx
+            )
+        }.toMap()
+
         val parsedReports = reports.map { it.toParsed() }
-        val dayReport = parsedReports.find { it.scopeKey == "day:$todayIso" }
+        val dayReport = parsedReports.find { it.scopeKey == "day:$activeTodayIso" }
         val byScope = parsedReports.associateBy { it.scopeKey }
 
-        val latestMutation = mutations[todayIso] ?: 0L
+        val latestMutation = mutations[activeTodayIso] ?: 0L
         val isDayStale = dayReport != null && (
             todayLogs.any { it.updatedAtMillis > dayReport.createdAtMillis } ||
                 latestMutation > dayReport.createdAtMillis
@@ -99,9 +145,11 @@ class TodayViewModel(
         }.toSet()
 
         TodayUiState(
-            dateIso = todayIso,
+            dateIso = activeTodayIso,
             settings = settings,
             summary = summary,
+            concentrationChartModel = chartModel,
+            entryConcentrationSeries = perEntrySeries,
             entriesByDate = grouped,
             savedDayReport = dayReport,
             isDayReportStale = isDayStale,
@@ -123,6 +171,12 @@ class TodayViewModel(
 
     private var activeAnalysisJob: Job? = null
     private var lastAnalysisRequestAtMs: Long = 0L
+
+    fun setDecayModelMode(mode: DecayModelMode) {
+        viewModelScope.launch {
+            prefsRepo.updateDecayModelMode(mode)
+        }
+    }
 
     fun saveOrUpdateEntry(
         targetDateIso: String,
@@ -166,7 +220,8 @@ class TodayViewModel(
                     halfLifeHours = safeHalfLife,
                     disruptionWeight = safeWeight,
                     notes = cleanNotes,
-                    updatedAtMillis = now
+                    updatedAtMillis = now,
+                    syncId = previous?.resolvedSyncId() ?: "log_$existingId"
                 )
                 substanceRepo.updateLog(updated)
                 if (previous != null && previous.dateIso != targetDateIso) {
@@ -216,9 +271,21 @@ class TodayViewModel(
             val dayEnd = DateTimeUtils.combineDateAndTime(entry.dateIso, 23, 59)
             val newTakenAt = (entry.takenAtMillis + timeDeltaMillis).coerceIn(dayStart, dayEnd)
 
+            val updatedNotes = if (doseDelta != 0.0) {
+                StructuredSessionMetadata.scaleQuantityForDoseRatio(
+                    substanceId = entry.substanceId,
+                    fullNotes = entry.notes,
+                    oldDose = entry.dosageAmount,
+                    newDose = newDosage
+                )
+            } else {
+                entry.notes
+            }
+
             val updated = entry.copy(
                 dosageAmount = newDosage,
                 takenAtMillis = newTakenAt,
+                notes = updatedNotes,
                 updatedAtMillis = now
             )
             substanceRepo.updateLog(updated)
@@ -272,7 +339,7 @@ class TodayViewModel(
         _undoEvent.value = null
     }
 
-    fun analyzeDay(forceGeminiFallback: Boolean = false) {
+    fun analyzeDay(forceGeminiFallback: Boolean = false, forceRefresh: Boolean = false) {
         if (activeAnalysisJob?.isActive == true || _aiState.value is AiAnalysisUiState.Loading) return
         val currentLogs = uiState.value.summary.entryInfos.map { it.entry }
         if (currentLogs.isEmpty()) {
@@ -280,7 +347,7 @@ class TodayViewModel(
             return
         }
         val now = System.currentTimeMillis()
-        if (!forceGeminiFallback && now - lastAnalysisRequestAtMs < AI_COOLDOWN_MS) {
+        if (!forceGeminiFallback && !forceRefresh && now - lastAnalysisRequestAtMs < AI_COOLDOWN_MS) {
             _aiState.value = AiAnalysisUiState.Error("Please wait a moment before starting another analysis.")
             return
         }
@@ -290,24 +357,39 @@ class TodayViewModel(
             _aiState.value = AiAnalysisUiState.Loading("Analyzing today's stack via $modeLabel...")
             try {
                 val report = aiRepo.analyzeDay(
-                    dateIso = todayIso,
+                    dateIso = uiState.value.dateIso,
                     entries = currentLogs,
                     forceGeminiFallback = forceGeminiFallback
                 )
                 _aiState.value = AiAnalysisUiState.Success(report)
             } catch (e: CancellationException) {
+                lastAnalysisRequestAtMs = 0L
                 throw e
+            } catch (e: GeminiAnalysisException) {
+                lastAnalysisRequestAtMs = 0L
+                Log.e("TodayViewModel", "Day Gemini analysis failed: ${e.technicalDetails}", e)
+                _aiState.value = AiAnalysisUiState.Error(
+                    message = e.userMessage,
+                    technicalDetails = e.technicalDetails,
+                    failureKind = e.failureKind,
+                    billingUrl = e.billingUrl,
+                    lastEntry = null
+                )
             } catch (e: Exception) {
-                if (BuildConfig.DEBUG) {
-                    Log.w("TodayViewModel", "Day analysis failed", e)
-                }
+                lastAnalysisRequestAtMs = 0L
+                Log.e("TodayViewModel", "Day analysis failed", e)
+                val (kind, billing) = classifyNonGeminiFailure(e)
                 val safeMsg = if (e is IllegalStateException || e is IllegalArgumentException) {
                     e.message ?: "Sleep impact analysis failed."
                 } else {
-                    "Sleep impact analysis failed. Please check your connection and settings."
+                    e.localizedMessage?.takeIf { it.isNotBlank() }
+                        ?: "Sleep impact analysis failed. Please check your connection and settings."
                 }
                 _aiState.value = AiAnalysisUiState.Error(
                     message = safeMsg,
+                    technicalDetails = formatErrorDetails(e),
+                    failureKind = kind,
+                    billingUrl = billing,
                     lastEntry = null
                 )
             }
@@ -321,17 +403,21 @@ class TodayViewModel(
             _aiState.value = AiAnalysisUiState.Success(cached)
             return
         }
-        runEntryAnalysis(entry, forceGeminiFallback)
+        runEntryAnalysis(entry, forceGeminiFallback, forceRefresh = forceGeminiFallback)
     }
 
     fun refreshSingleEntryAnalysis(entry: SubstanceLogEntity, forceGeminiFallback: Boolean = false) {
-        runEntryAnalysis(entry, forceGeminiFallback)
+        runEntryAnalysis(entry, forceGeminiFallback, forceRefresh = true)
     }
 
-    private fun runEntryAnalysis(entry: SubstanceLogEntity, forceGeminiFallback: Boolean) {
+    private fun runEntryAnalysis(
+        entry: SubstanceLogEntity,
+        forceGeminiFallback: Boolean,
+        forceRefresh: Boolean
+    ) {
         if (activeAnalysisJob?.isActive == true || _aiState.value is AiAnalysisUiState.Loading) return
         val now = System.currentTimeMillis()
-        if (!forceGeminiFallback && now - lastAnalysisRequestAtMs < AI_COOLDOWN_MS) {
+        if (!forceGeminiFallback && !forceRefresh && now - lastAnalysisRequestAtMs < AI_COOLDOWN_MS) {
             _aiState.value = AiAnalysisUiState.Error(
                 message = "Please wait a moment before starting another analysis.",
                 lastEntry = entry
@@ -349,21 +435,64 @@ class TodayViewModel(
                 )
                 _aiState.value = AiAnalysisUiState.Success(report)
             } catch (e: CancellationException) {
+                lastAnalysisRequestAtMs = 0L
                 throw e
+            } catch (e: GeminiAnalysisException) {
+                lastAnalysisRequestAtMs = 0L
+                Log.e("TodayViewModel", "Entry Gemini analysis failed: ${e.technicalDetails}", e)
+                _aiState.value = AiAnalysisUiState.Error(
+                    message = e.userMessage,
+                    technicalDetails = e.technicalDetails,
+                    failureKind = e.failureKind,
+                    billingUrl = e.billingUrl,
+                    lastEntry = entry
+                )
             } catch (e: Exception) {
-                if (BuildConfig.DEBUG) {
-                    Log.w("TodayViewModel", "Entry analysis failed", e)
-                }
+                lastAnalysisRequestAtMs = 0L
+                Log.e("TodayViewModel", "Entry analysis failed", e)
+                val (kind, billing) = classifyNonGeminiFailure(e)
                 val safeMsg = if (e is IllegalStateException || e is IllegalArgumentException) {
                     e.message ?: "Analysis failed for ${entry.substanceName}."
                 } else {
-                    "Analysis failed for ${entry.substanceName}. Please check your connection and settings."
+                    e.localizedMessage?.takeIf { it.isNotBlank() }
+                        ?: "Analysis failed for ${entry.substanceName}. Please check your connection and settings."
                 }
                 _aiState.value = AiAnalysisUiState.Error(
                     message = safeMsg,
+                    technicalDetails = formatErrorDetails(e),
+                    failureKind = kind,
+                    billingUrl = billing,
                     lastEntry = entry
                 )
             }
+        }
+    }
+
+    private fun classifyNonGeminiFailure(
+        e: Throwable
+    ): Pair<com.example.data.remote.AiFailureKind, String?> {
+        val msg = (e.message ?: "").lowercase()
+        return when {
+            msg.contains("prepayment") || msg.contains("credits are depleted") || msg.contains("billing") ->
+                com.example.data.remote.AiFailureKind.BILLING_DEPLETED to com.example.data.remote.AI_STUDIO_BILLING_URL
+            msg.contains("nvidia") && (
+                msg.contains("api key") || msg.contains("authentication failed") ||
+                    msg.contains("empty") || msg.contains("401") || msg.contains("403") ||
+                    msg.contains("settings")
+                ) ->
+                com.example.data.remote.AiFailureKind.CONFIGURATION_REQUIRED to null
+            msg.contains("timed out") || e is java.net.SocketTimeoutException ->
+                com.example.data.remote.AiFailureKind.TIMEOUT to null
+            e is java.net.UnknownHostException || e is java.io.IOException ->
+                com.example.data.remote.AiFailureKind.NETWORK to null
+            else -> com.example.data.remote.AiFailureKind.UNKNOWN to null
+        }
+    }
+
+    private fun formatErrorDetails(e: Throwable): String = buildString {
+        append("${e::class.java.simpleName}: ${e.message ?: "No details"}")
+        e.cause?.let { cause ->
+            append("\nCause: ${cause::class.java.simpleName}: ${cause.message ?: "No details"}")
         }
     }
 

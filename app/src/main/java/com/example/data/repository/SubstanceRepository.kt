@@ -6,6 +6,8 @@ import com.example.data.local.CircadiaDao
 import com.example.data.local.SafeFileReader
 import com.example.data.local.SleepSessionEntity
 import com.example.data.local.SubstanceLogEntity
+import com.example.data.local.generateLogSyncId
+import com.example.domain.SleepSessionMerger
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -63,6 +65,7 @@ class SubstanceRepository(private val dao: CircadiaDao) {
         val logsJson = JSONArray().apply {
             logs.forEach { log ->
                 put(JSONObject().apply {
+                    put("syncId", log.resolvedSyncId())
                     put("dateIso", log.dateIso)
                     put("substanceId", log.substanceId)
                     put("substanceName", log.substanceName)
@@ -142,6 +145,11 @@ class SubstanceRepository(private val dao: CircadiaDao) {
 
                 val takenAt = obj.optLong("takenAtMillis", now).let { if (it > 0L) it else now }
                 val updatedAt = obj.optLong("updatedAtMillis", now).let { if (it > 0L) it else now }
+                val rawSyncId = obj.optString("syncId", "")
+                    .trim()
+                    .replace(SYNC_ID_SANITIZE_REGEX, "_")
+                    .take(128)
+                    .ifBlank { generateLogSyncId() }
 
                 importedLogs.add(
                     SubstanceLogEntity(
@@ -155,12 +163,50 @@ class SubstanceRepository(private val dao: CircadiaDao) {
                         halfLifeHours = halfLifeHours,
                         disruptionWeight = disruptionWeight,
                         notes = notes,
-                        updatedAtMillis = updatedAt
+                        updatedAtMillis = updatedAt,
+                        syncId = rawSyncId
                     )
                 )
             }
+
+            var appliedLogCount = 0
             if (importedLogs.isNotEmpty()) {
-                dao.insertLogs(importedLogs)
+                val existingLogs = dao.getAllLogsOnce()
+                val existingBySyncId = existingLogs.associateBy { it.resolvedSyncId() }.toMutableMap()
+                val existingByFingerprint = existingLogs.associateBy { it.contentFingerprint() }.toMutableMap()
+                val toInsert = mutableListOf<SubstanceLogEntity>()
+                val toUpdate = mutableListOf<SubstanceLogEntity>()
+                val mutatedDates = mutableSetOf<String>()
+
+                for (candidate in importedLogs) {
+                    val syncKey = candidate.resolvedSyncId()
+                    val fpKey = candidate.contentFingerprint()
+                    val matched = existingBySyncId[syncKey] ?: existingByFingerprint[fpKey]
+                    if (matched == null) {
+                        toInsert.add(candidate)
+                        existingBySyncId[syncKey] = candidate
+                        existingByFingerprint[fpKey] = candidate
+                        mutatedDates.add(candidate.dateIso)
+                    } else if (matched.id > 0L && candidate.updatedAtMillis > matched.updatedAtMillis) {
+                        val updated = candidate.copy(
+                            id = matched.id,
+                            syncId = matched.resolvedSyncId()
+                        )
+                        toUpdate.add(updated)
+                        existingBySyncId[updated.resolvedSyncId()] = updated
+                        existingByFingerprint[updated.contentFingerprint()] = updated
+                        mutatedDates.add(updated.dateIso)
+                    }
+                }
+
+                if (toInsert.isNotEmpty()) {
+                    dao.insertLogs(toInsert)
+                }
+                toUpdate.forEach { dao.updateLog(it) }
+                mutatedDates.forEach { dateIso ->
+                    markDateMutated(dateIso, now)
+                }
+                appliedLogCount = toInsert.size + toUpdate.size
             }
 
             val sessionsArr = root.optJSONArray("sleepSessions") ?: JSONArray()
@@ -197,11 +243,19 @@ class SubstanceRepository(private val dao: CircadiaDao) {
                     )
                 )
             }
+            var appliedSessionCount = 0
             if (importedSessions.isNotEmpty()) {
-                dao.upsertSleepSessions(importedSessions)
+                val mergedSessions = SleepSessionMerger.mergeWithExisting(
+                    existing = dao.getAllSleepSessionsOnce(),
+                    incoming = importedSessions
+                )
+                if (mergedSessions.isNotEmpty()) {
+                    dao.upsertSleepSessions(mergedSessions)
+                    appliedSessionCount = mergedSessions.size
+                }
             }
 
-            importedLogs.size to importedSessions.size
+            appliedLogCount to appliedSessionCount
         }
 
     private fun JSONObject.optFiniteDouble(key: String, fallback: Double, min: Double, max: Double): Double {
@@ -211,5 +265,6 @@ class SubstanceRepository(private val dao: CircadiaDao) {
 
     private companion object {
         val DATE_ISO_REGEX = Regex("^\\d{4}-\\d{2}-\\d{2}$")
+        val SYNC_ID_SANITIZE_REGEX = Regex("[^a-zA-Z0-9_\\-]")
     }
 }

@@ -8,6 +8,7 @@ import com.example.data.local.SleepSessionEntity
 import com.example.data.local.UserPreferencesRepository
 import com.example.data.remote.GoogleFitRestService
 import com.example.domain.DateTimeUtils
+import com.example.domain.SleepSessionMerger
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.withContext
@@ -96,10 +97,12 @@ class HealthSyncRepository(
             throw IllegalStateException("Google Fit session expired or not connected. Please sign in again.")
         }
         val sessions = googleFitService.fetchRecentSleepSessions(settings.googleAccessToken)
-        if (sessions.isNotEmpty()) {
-            dao.upsertSleepSessions(sessions)
+        if (sessions.isEmpty()) return 0
+        val merged = SleepSessionMerger.mergeWithExisting(dao.getAllSleepSessionsOnce(), sessions)
+        if (merged.isNotEmpty()) {
+            dao.upsertSleepSessions(merged)
         }
-        return sessions.size
+        return merged.size
     }
 
     suspend fun disconnectGoogleFit() {
@@ -129,8 +132,9 @@ class HealthSyncRepository(
             )
         }
 
-        dao.upsertSleepSessions(parsed)
-        parsed.size
+        val merged = SleepSessionMerger.mergeWithExisting(dao.getAllSleepSessionsOnce(), parsed)
+        dao.upsertSleepSessions(merged)
+        merged.size
     }
 
     private fun parseJsonSleepExport(raw: String): List<SleepSessionEntity> {

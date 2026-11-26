@@ -55,7 +55,8 @@ class SleepImpactAiRepository(
         val summary = PharmacokineticsEngine.analyzeDay(
             dateIso = dateIso,
             entries = entries,
-            targetBedtimeMinutes = settings.targetBedtimeMinutes
+            targetBedtimeMinutes = settings.targetBedtimeMinutes,
+            decayModel = settings.decayModelMode
         )
 
         val prompt = buildString {
@@ -104,7 +105,8 @@ class SleepImpactAiRepository(
             takenAtMillis = entry.takenAtMillis,
             halfLifeHours = entry.halfLifeHours,
             peakOnsetMinutes = ref?.peakOnsetMinutes ?: 30,
-            targetMillis = bedtimeMillis
+            targetMillis = bedtimeMillis,
+            model = settings.decayModelMode
         )
         val pctAtBed = if (entry.dosageAmount > 0) (remAtBed / entry.dosageAmount * 100.0) else 0.0
 

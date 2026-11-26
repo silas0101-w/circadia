@@ -18,6 +18,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -54,6 +56,7 @@ import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -65,12 +68,16 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.example.data.local.SubstanceLogEntity
 import com.example.domain.DateTimeUtils
+import com.example.domain.DecayModelMode
 import com.example.domain.EntryClearanceInfo
 import com.example.domain.PharmacokineticsEngine
+import com.example.domain.StructuredSessionMetadata
+import com.example.domain.SubstanceConcentrationSeries
 import com.example.ui.theme.MidnightSlate900
 import com.example.ui.theme.WarmAmber400
 import java.util.Locale
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun SubstanceEntryCard(
     info: EntryClearanceInfo,
@@ -80,7 +87,11 @@ fun SubstanceEntryCard(
     onAnalyzeClick: () -> Unit,
     onEditClick: () -> Unit,
     onDeleteClick: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    concentrationSeries: SubstanceConcentrationSeries? = null,
+    bedtimeMillis: Long? = null,
+    nowMillis: Long? = null,
+    decayModel: DecayModelMode = DecayModelMode.ONSET_RAMP
 ) {
     val e = info.entry
     var isExpanded by rememberSaveable(e.id) { mutableStateOf(false) }
@@ -229,7 +240,7 @@ fun SubstanceEntryCard(
                 )
             }
 
-            // Expandable Inline Quick-Stepper Tray
+            // Expandable Inline Per-Substance Decay Curve + Quick-Stepper Tray
             AnimatedVisibility(
                 visible = isExpanded,
                 enter = expandVertically(
@@ -245,8 +256,17 @@ fun SubstanceEntryCard(
                 ) {
                     Column(
                         modifier = Modifier.padding(10.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
+                        if (concentrationSeries != null && bedtimeMillis != null) {
+                            SingleSubstanceDecayChart(
+                                series = concentrationSeries,
+                                bedtimeMillis = bedtimeMillis,
+                                nowMillis = nowMillis,
+                                decayModel = decayModel
+                            )
+                        }
+
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
@@ -312,9 +332,45 @@ fun SubstanceEntryCard(
                 }
             }
 
-            if (e.notes.isNotBlank()) {
+            val (breakdownPills, cleanUserNotes) = remember(e.notes) {
+                StructuredSessionMetadata.extractBreakdownPillsAndUserNotes(e.notes)
+            }
+            if (breakdownPills.isNotEmpty()) {
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("entry_breakdown_pills_${e.id}")
+                ) {
+                    breakdownPills.forEachIndexed { idx, pill ->
+                        val isPrimaryMethodPill = idx == 0
+                        Surface(
+                            color = if (isPrimaryMethodPill) {
+                                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.78f)
+                            } else {
+                                MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.72f)
+                            },
+                            shape = MaterialTheme.shapes.extraSmall
+                        ) {
+                            Text(
+                                text = pill,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (isPrimaryMethodPill) {
+                                    MaterialTheme.colorScheme.onPrimaryContainer
+                                } else {
+                                    MaterialTheme.colorScheme.onSecondaryContainer
+                                },
+                                fontWeight = if (isPrimaryMethodPill) FontWeight.SemiBold else FontWeight.Medium,
+                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
+                            )
+                        }
+                    }
+                }
+            }
+            if (cleanUserNotes.isNotBlank()) {
                 Text(
-                    text = e.notes,
+                    text = cleanUserNotes,
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -428,10 +484,12 @@ private fun QuickStepPill(
 }
 
 fun formatCompactAmount(amount: Double): String {
-    return if (amount % 1.0 == 0.0) {
-        amount.toInt().toString()
+    if (!amount.isFinite()) return "0"
+    val rounded = kotlin.math.round(amount * 100.0) / 100.0
+    return if (rounded % 1.0 == 0.0) {
+        rounded.toInt().toString()
     } else {
-        String.format(Locale.US, "%.1f", amount)
+        String.format(Locale.US, "%.2f", rounded).trimEnd('0').trimEnd('.')
     }
 }
 

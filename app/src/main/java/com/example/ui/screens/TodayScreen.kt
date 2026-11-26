@@ -31,7 +31,10 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Bedtime
+import androidx.compose.material.icons.filled.CloudDone
 import androidx.compose.material.icons.filled.LocalCafe
+import androidx.compose.material.icons.filled.Memory
+import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.filled.Update
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -57,7 +60,14 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import com.example.data.local.SubstanceLogEntity
+import com.example.data.remote.HalfLifeSource
+import com.example.data.remote.OpenFdaPharmacokinetics
+import com.example.data.remote.RemoteMedicationItem
+import com.example.data.repository.MedicationSearchResult
 import com.example.domain.DateTimeUtils
+import com.example.domain.DecayModelMode
+import com.example.domain.SubstanceCatalog
+import com.example.domain.SubstanceCategory
 import com.example.ui.AiAnalysisUiState
 import com.example.ui.TodayUiState
 import com.example.ui.UndoEvent
@@ -65,10 +75,10 @@ import com.example.ui.UndoSnapshot
 import com.example.ui.components.AiImpactSheet
 import com.example.ui.components.BindFiveSecondUndoSnackbar
 import com.example.ui.components.CircadiaSnackbarHost
-import com.example.ui.components.ClearanceDecayChart
 import com.example.ui.components.ConfirmDeleteDialog
 import com.example.ui.components.DisruptionScoreGauge
 import com.example.ui.components.LogSubstanceSheet
+import com.example.ui.components.MultiSeriesConcentrationChart
 import com.example.ui.components.SubstanceEntryCard
 import com.example.ui.components.colorForSeverity
 import com.example.ui.components.rememberPressScale
@@ -99,6 +109,16 @@ fun TodayScreen(
     onAnalyzeEntry: (SubstanceLogEntity, Boolean) -> Unit,
     onShowSavedDayReport: () -> Unit,
     onDismissAiSheet: () -> Unit,
+    onOpenSettings: () -> Unit = {},
+    onSelectDecayModel: (DecayModelMode) -> Unit = {},
+    onRefreshDay: () -> Unit = { onAnalyzeDay(false) },
+    onRefreshEntry: (SubstanceLogEntity) -> Unit = { onAnalyzeEntry(it, false) },
+    onSearchMedications: suspend (String, SubstanceCategory?) -> MedicationSearchResult = { q, cat ->
+        MedicationSearchResult(SubstanceCatalog.search(q, cat), emptyList(), false, false)
+    },
+    onResolveMedicationPk: suspend (RemoteMedicationItem) -> OpenFdaPharmacokinetics = {
+        OpenFdaPharmacokinetics(5.0, 45, null, HalfLifeSource.ESTIMATED)
+    },
     modifier: Modifier = Modifier
 ) {
     var showLogSheet by remember { mutableStateOf(false) }
@@ -157,27 +177,74 @@ fun TodayScreen(
         ) {
             // Header
             item(key = "today_header") {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column {
-                        Text(
-                            text = "Today's Log",
-                            style = MaterialTheme.typography.headlineLarge,
-                            color = MaterialTheme.colorScheme.onBackground
-                        )
-                        Text(
-                            text = DateTimeUtils.formatDisplayDate(uiState.dateIso),
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Today's Log",
+                                style = MaterialTheme.typography.headlineLarge,
+                                color = MaterialTheme.colorScheme.onBackground
+                            )
+                            Text(
+                                text = DateTimeUtils.formatDisplayDate(uiState.dateIso),
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Surface(
+                            color = MaterialTheme.colorScheme.surfaceContainer,
+                            shape = MaterialTheme.shapes.small,
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.5f))
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Bedtime,
+                                    contentDescription = "Target bedtime",
+                                    tint = MaterialTheme.colorScheme.secondary,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Text(
+                                    text = "Bed ${DateTimeUtils.formatMinutesOfDay(uiState.settings.targetBedtimeMinutes)}",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                            }
+                        }
+                    }
+
+                    val (persistenceLabel, persistenceIcon) = when {
+                        uiState.settings.persistentDbEnabled && uiState.settings.cloudSyncEnabled ->
+                            "DB + Cloud Sync Active" to Icons.Default.CloudDone
+                        uiState.settings.persistentDbEnabled ->
+                            "Local SQLite DB Active" to Icons.Default.Storage
+                        else ->
+                            "Session-Only Mode · Tap to save to DB" to Icons.Default.Memory
                     }
                     Surface(
-                        color = MaterialTheme.colorScheme.surfaceContainer,
+                        onClick = onOpenSettings,
+                        color = if (uiState.settings.persistentDbEnabled) {
+                            MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.55f)
+                        } else {
+                            MaterialTheme.colorScheme.surfaceContainer
+                        },
                         shape = MaterialTheme.shapes.small,
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.5f))
+                        border = BorderStroke(
+                            1.dp,
+                            if (uiState.settings.persistentDbEnabled) {
+                                MaterialTheme.colorScheme.secondary.copy(alpha = 0.45f)
+                            } else {
+                                MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)
+                            }
+                        ),
+                        modifier = Modifier.testTag("today_persistence_status_chip")
                     ) {
                         Row(
                             modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
@@ -185,15 +252,23 @@ fun TodayScreen(
                             horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
                             Icon(
-                                imageVector = Icons.Default.Bedtime,
-                                contentDescription = "Target bedtime",
-                                tint = MaterialTheme.colorScheme.secondary,
-                                modifier = Modifier.size(16.dp)
+                                imageVector = persistenceIcon,
+                                contentDescription = persistenceLabel,
+                                tint = if (uiState.settings.persistentDbEnabled) {
+                                    MaterialTheme.colorScheme.secondary
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                },
+                                modifier = Modifier.size(15.dp)
                             )
                             Text(
-                                text = "Bed ${DateTimeUtils.formatMinutesOfDay(uiState.settings.targetBedtimeMinutes)}",
+                                text = persistenceLabel,
                                 style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.onSurface
+                                color = if (uiState.settings.persistentDbEnabled) {
+                                    MaterialTheme.colorScheme.onSecondaryContainer
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                }
                             )
                         }
                     }
@@ -274,12 +349,10 @@ fun TodayScreen(
                             ) + fadeIn(tween(240)),
                             exit = shrinkVertically(tween(200)) + fadeOut(tween(160))
                         ) {
-                            ClearanceDecayChart(
-                                curve = summary.decayCurve,
-                                curveStartMillis = summary.curveStartMillis,
-                                curveEndMillis = summary.curveEndMillis,
-                                bedtimeMillis = summary.bedtimeMillis,
-                                nowMillis = uiState.nowMillis
+                            MultiSeriesConcentrationChart(
+                                chartModel = uiState.concentrationChartModel,
+                                nowMillis = uiState.nowMillis,
+                                onSelectDecayModel = onSelectDecayModel
                             )
                         }
 
@@ -414,6 +487,10 @@ fun TodayScreen(
                         onDeleteClick = {
                             pendingDeleteEntry = info.entry
                         },
+                        concentrationSeries = uiState.entryConcentrationSeries[entryId],
+                        bedtimeMillis = summary.bedtimeMillis,
+                        nowMillis = uiState.nowMillis,
+                        decayModel = uiState.settings.decayModelMode,
                         modifier = Modifier.animateItem()
                     )
                 }
@@ -430,7 +507,10 @@ fun TodayScreen(
             initialDateIso = editingEntry?.dateIso ?: uiState.dateIso,
             existingEntriesByDate = uiState.entriesByDate,
             targetBedtimeMinutes = uiState.settings.targetBedtimeMinutes,
+            decayModelMode = uiState.settings.decayModelMode,
             editingEntry = editingEntry,
+            onSearchMedications = onSearchMedications,
+            onResolveMedicationPk = onResolveMedicationPk,
             onDismiss = { showLogSheet = false },
             onRequestDelete = { toDelete ->
                 showLogSheet = false
@@ -494,10 +574,11 @@ fun TodayScreen(
             if (scopeKey.startsWith("entry:")) {
                 val id = scopeKey.removePrefix("entry:").toLongOrNull()
                 val match = summary.entryInfos.find { it.entry.id == id }?.entry
-                if (match != null) onAnalyzeEntry(match, false)
+                if (match != null) onRefreshEntry(match)
             } else {
-                onAnalyzeDay(false)
+                onRefreshDay()
             }
-        }
+        },
+        onOpenSettings = onOpenSettings
     )
 }

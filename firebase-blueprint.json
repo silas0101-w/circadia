@@ -1,0 +1,256 @@
+{
+  "entities": {
+    "SubstanceLogRecord": {
+      "title": "SubstanceLogRecord",
+      "description": "Cloud backup of a user's logged substance intake entry with pharmacokinetic parameters.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Firebase Auth UID of the owner."
+        },
+        "localId": {
+          "type": "integer",
+          "description": "Local Room primary key identifier."
+        },
+        "dateIso": {
+          "type": "string",
+          "description": "Local calendar date in YYYY-MM-DD format."
+        },
+        "substanceId": {
+          "type": "string",
+          "description": "Catalog identifier for the substance."
+        },
+        "substanceName": {
+          "type": "string",
+          "description": "Display name of the logged substance."
+        },
+        "category": {
+          "type": "string",
+          "description": "Pharmacological category."
+        },
+        "dosageAmount": {
+          "type": "number",
+          "description": "Dosage quantity."
+        },
+        "dosageUnit": {
+          "type": "string",
+          "description": "Unit of dosage (e.g., mg, drinks)."
+        },
+        "takenAtMillis": {
+          "type": "integer",
+          "description": "Epoch milliseconds when taken."
+        },
+        "halfLifeHours": {
+          "type": "number",
+          "description": "Elimination half-life in hours."
+        },
+        "disruptionWeight": {
+          "type": "number",
+          "description": "Sleep disruption multiplier weight."
+        },
+        "notes": {
+          "type": "string",
+          "description": "Optional user notes."
+        },
+        "updatedAtMillis": {
+          "type": "integer",
+          "description": "Client update timestamp in epoch millis."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp set via FieldValue.serverTimestamp() on creation."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp updated via FieldValue.serverTimestamp()."
+        }
+      },
+      "required": [
+        "userId",
+        "localId",
+        "dateIso",
+        "substanceId",
+        "substanceName",
+        "category",
+        "dosageAmount",
+        "dosageUnit",
+        "takenAtMillis",
+        "halfLifeHours",
+        "disruptionWeight",
+        "notes",
+        "updatedAtMillis",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "SleepSessionRecord": {
+      "title": "SleepSessionRecord",
+      "description": "Cloud backup of a synced or imported nocturnal sleep architecture record.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Firebase Auth UID of the owner."
+        },
+        "dateIso": {
+          "type": "string",
+          "description": "Wake date in YYYY-MM-DD format."
+        },
+        "source": {
+          "type": "string",
+          "description": "Data source label."
+        },
+        "totalDurationMinutes": {
+          "type": "integer",
+          "description": "Total sleep duration in minutes."
+        },
+        "remMinutes": {
+          "type": "integer",
+          "description": "REM sleep minutes."
+        },
+        "deepMinutes": {
+          "type": "integer",
+          "description": "Deep N3 sleep minutes."
+        },
+        "lightMinutes": {
+          "type": "integer",
+          "description": "Light sleep minutes."
+        },
+        "awakeMinutes": {
+          "type": "integer",
+          "description": "Awake minutes during sleep window."
+        },
+        "restingHeartRateBpm": {
+          "type": "integer",
+          "description": "Optional nocturnal resting heart rate in BPM."
+        },
+        "bedtimeMillis": {
+          "type": "integer",
+          "description": "Sleep start epoch milliseconds."
+        },
+        "wakeTimeMillis": {
+          "type": "integer",
+          "description": "Wake time epoch milliseconds."
+        },
+        "syncedAtMillis": {
+          "type": "integer",
+          "description": "Client sync timestamp in epoch millis."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp set via FieldValue.serverTimestamp() on creation."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp updated via FieldValue.serverTimestamp()."
+        }
+      },
+      "required": [
+        "userId",
+        "dateIso",
+        "source",
+        "totalDurationMinutes",
+        "remMinutes",
+        "deepMinutes",
+        "lightMinutes",
+        "awakeMinutes",
+        "bedtimeMillis",
+        "wakeTimeMillis",
+        "syncedAtMillis",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "AiImpactReportRecord": {
+      "title": "AiImpactReportRecord",
+      "description": "Cloud backup of a generated sleep impact analysis report.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Firebase Auth UID of the owner."
+        },
+        "scopeKey": {
+          "type": "string",
+          "description": "Logical report key such as day:2026-11-17 or entry:42."
+        },
+        "dateIso": {
+          "type": "string",
+          "description": "Calendar date in YYYY-MM-DD format."
+        },
+        "providerUsed": {
+          "type": "string",
+          "description": "AI provider identifier."
+        },
+        "modelUsed": {
+          "type": "string",
+          "description": "Model identifier used for generation."
+        },
+        "severityRating": {
+          "type": "string",
+          "description": "Severity assessment label."
+        },
+        "biologicalMechanism": {
+          "type": "string",
+          "description": "Explanation of sleep impact mechanism."
+        },
+        "mitigationTipsJson": {
+          "type": "string",
+          "description": "Serialized JSON array of mitigation tips."
+        },
+        "createdAtMillis": {
+          "type": "integer",
+          "description": "Client generation timestamp in epoch millis."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp set via FieldValue.serverTimestamp() on creation."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp updated via FieldValue.serverTimestamp()."
+        }
+      },
+      "required": [
+        "userId",
+        "scopeKey",
+        "dateIso",
+        "providerUsed",
+        "modelUsed",
+        "severityRating",
+        "biologicalMechanism",
+        "mitigationTipsJson",
+        "createdAtMillis",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}/substance_logs/{logId}": {
+      "schema": {
+        "$ref": "#/entities/SubstanceLogRecord"
+      },
+      "description": "Per-user persisted substance intake logs."
+    },
+    "/users/{userId}/sleep_sessions/{sessionId}": {
+      "schema": {
+        "$ref": "#/entities/SleepSessionRecord"
+      },
+      "description": "Per-user persisted sleep session records."
+    },
+    "/users/{userId}/ai_reports/{reportId}": {
+      "schema": {
+        "$ref": "#/entities/AiImpactReportRecord"
+      },
+      "description": "Per-user persisted AI sleep impact reports."
+    }
+  }
+}

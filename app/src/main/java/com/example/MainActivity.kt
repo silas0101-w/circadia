@@ -52,6 +52,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import com.example.data.remote.GoogleCredentialAuthHelper
 import com.example.domain.SubstanceCatalog
 import com.example.ui.HealthSyncViewModel
 import com.example.ui.HistoryViewModel
@@ -119,6 +120,9 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        if (!intent.getStringExtra("FIREBASE_APPCHECK_DEBUG_TOKEN").isNullOrBlank()) {
+            configureAppCheck(this, intent)
+        }
         extractOAuthRedirectUri(intent)?.let { uri ->
             oauthRedirectUriState.value = uri
         }
@@ -168,9 +172,26 @@ private fun CircadiaAppRoot(
     val settingsViewModel: SettingsViewModel = viewModel(
         factory = SettingsViewModel.factory(
             container.prefsRepository,
-            container.substanceRepository
+            container.substanceRepository,
+            container.persistenceRepository
         )
     )
+
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val coroutineScope = androidx.compose.runtime.rememberCoroutineScope()
+    androidx.compose.runtime.LaunchedEffect(Unit) {
+        val currentSettings = container.prefsRepository.getCurrentSettings()
+        if (currentSettings.persistentDbEnabled && currentSettings.cloudSyncEnabled) {
+            GoogleCredentialAuthHelper.attemptAutoSignIn(
+                context = context,
+                scope = coroutineScope,
+                onAuthSuccess = { email ->
+                    settingsViewModel.onFirebaseGoogleSignedIn(email)
+                },
+                onUnauthenticated = {}
+            )
+        }
+    }
 
     // Process incoming Google OAuth 2.0 PKCE redirect
     androidx.compose.runtime.LaunchedEffect(oauthRedirectUri) {
@@ -344,12 +365,18 @@ private fun CircadiaAppRoot(
                                 onConfirmDeleteEntry = todayViewModel::confirmDeleteEntry,
                                 onUndo = todayViewModel::undoLastAction,
                                 onConsumeUndoEvent = todayViewModel::consumeUndoEvent,
-                                onAnalyzeDay = todayViewModel::analyzeDay,
+                                onAnalyzeDay = { forceGemini -> todayViewModel.analyzeDay(forceGemini) },
                                 onAnalyzeEntry = todayViewModel::analyzeSingleEntry,
                                 onShowSavedDayReport = {
                                     state.savedDayReport?.let { todayViewModel.showSavedReport(it) }
                                 },
-                                onDismissAiSheet = todayViewModel::dismissAiSheet
+                                onDismissAiSheet = todayViewModel::dismissAiSheet,
+                                onOpenSettings = { navigateTo(ROUTE_SETTINGS) },
+                                onSelectDecayModel = todayViewModel::setDecayModelMode,
+                                onRefreshDay = { todayViewModel.analyzeDay(forceGeminiFallback = false, forceRefresh = true) },
+                                onRefreshEntry = { todayViewModel.refreshSingleEntryAnalysis(it, false) },
+                                onSearchMedications = container.medicationCatalogRepository::searchCatalog,
+                                onResolveMedicationPk = container.medicationCatalogRepository::resolvePharmacokinetics
                             )
                         }
                         composable(ROUTE_HISTORY) {
@@ -368,10 +395,16 @@ private fun CircadiaAppRoot(
                                 onConfirmDeleteEntry = historyViewModel::confirmDeleteEntry,
                                 onUndo = historyViewModel::undoLastAction,
                                 onConsumeUndoEvent = historyViewModel::consumeUndoEvent,
-                                onAnalyzeSelectedDay = historyViewModel::analyzeSelectedDay,
+                                onAnalyzeSelectedDay = { forceGemini -> historyViewModel.analyzeSelectedDay(forceGemini) },
                                 onAnalyzeEntry = historyViewModel::analyzeSingleEntry,
                                 onShowSavedReport = historyViewModel::showSavedReport,
-                                onDismissAiSheet = historyViewModel::dismissAiSheet
+                                onDismissAiSheet = historyViewModel::dismissAiSheet,
+                                onOpenSettings = { navigateTo(ROUTE_SETTINGS) },
+                                onSelectDecayModel = historyViewModel::setDecayModelMode,
+                                onRefreshDay = { historyViewModel.analyzeSelectedDay(forceGeminiFallback = false, forceRefresh = true) },
+                                onRefreshEntry = { historyViewModel.refreshSingleEntryAnalysis(it, false) },
+                                onSearchMedications = container.medicationCatalogRepository::searchCatalog,
+                                onResolveMedicationPk = container.medicationCatalogRepository::resolvePharmacokinetics
                             )
                         }
                         composable(ROUTE_HEALTH_SYNC) {
@@ -386,13 +419,34 @@ private fun CircadiaAppRoot(
                         }
                         composable(ROUTE_SETTINGS) {
                             val settings by settingsViewModel.settingsState.collectAsStateWithLifecycle()
+                            val databaseStats by settingsViewModel.databaseStats.collectAsStateWithLifecycle()
+                            val diskDatabaseStats by settingsViewModel.diskDatabaseStats.collectAsStateWithLifecycle()
+                            val cloudAuthState by settingsViewModel.cloudAuthState.collectAsStateWithLifecycle()
+                            val isPersistenceBusy by settingsViewModel.isPersistenceBusy.collectAsStateWithLifecycle()
+                            val cloudSyncWorking by settingsViewModel.cloudSyncWorking.collectAsStateWithLifecycle()
+                            val showDisableDialog by settingsViewModel.showDisablePersistenceDialog.collectAsStateWithLifecycle()
                             val healthSyncState by healthSyncViewModel.uiState.collectAsStateWithLifecycle()
                             val feedback by settingsViewModel.feedbackMessage.collectAsStateWithLifecycle()
                             SettingsScreen(
                                 settings = settings,
+                                databaseStats = databaseStats,
+                                diskDatabaseStats = diskDatabaseStats,
+                                cloudAuthState = cloudAuthState,
+                                isPersistenceBusy = isPersistenceBusy,
+                                cloudSyncWorking = cloudSyncWorking,
+                                showDisablePersistenceDialog = showDisableDialog,
                                 healthSyncState = healthSyncState,
                                 feedbackMessage = feedback,
                                 onClearFeedback = settingsViewModel::clearFeedback,
+                                onTogglePersistentDatabase = settingsViewModel::onTogglePersistentDatabase,
+                                onDismissDisablePersistenceDialog = settingsViewModel::dismissDisablePersistenceDialog,
+                                onConfirmDisablePersistence = settingsViewModel::confirmDisablePersistence,
+                                onToggleCloudSync = settingsViewModel::onToggleCloudSync,
+                                onSyncCloudNow = settingsViewModel::syncCloudNow,
+                                onClearSavedDatabase = settingsViewModel::clearSavedDatabase,
+                                onFirebaseGoogleSignedIn = settingsViewModel::onFirebaseGoogleSignedIn,
+                                onFirebaseAuthMessage = settingsViewModel::onFirebaseAuthMessage,
+                                onFirebaseSignedOut = settingsViewModel::onFirebaseSignedOut,
                                 onSaveBedtime = settingsViewModel::saveTargetBedtime,
                                 onSaveAiSettings = settingsViewModel::saveAiSettings,
                                 onSaveGoogleClientId = settingsViewModel::saveGoogleClientId,

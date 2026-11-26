@@ -1,0 +1,189 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidDateIso(value) {
+      return value is string && value.size() == 10 && value.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$');
+    }
+
+    function isValidTimestampField(value) {
+      return value is timestamp && value <= request.time;
+    }
+
+    function isValidSubstanceLog(data, userId) {
+      return data.userId is string && data.userId == userId && data.userId.size() <= 128 &&
+             data.localId is int && data.localId >= 0 &&
+             isValidDateIso(data.dateIso) &&
+             data.substanceId is string && data.substanceId.size() >= 1 && data.substanceId.size() <= 64 &&
+             data.substanceName is string && data.substanceName.size() >= 1 && data.substanceName.size() <= 80 &&
+             data.category is string && data.category.size() >= 1 && data.category.size() <= 32 &&
+             data.dosageAmount is number && data.dosageAmount > 0 && data.dosageAmount <= 10000 &&
+             data.dosageUnit is string && data.dosageUnit.size() >= 1 && data.dosageUnit.size() <= 16 &&
+             data.takenAtMillis is int && data.takenAtMillis > 0 &&
+             data.halfLifeHours is number && data.halfLifeHours >= 0.25 && data.halfLifeHours <= 200 &&
+             data.disruptionWeight is number && data.disruptionWeight >= 0.05 && data.disruptionWeight <= 10 &&
+             data.notes is string && data.notes.size() <= 300 &&
+             data.updatedAtMillis is int && data.updatedAtMillis >= 0 &&
+             isValidTimestampField(data.createdAt) &&
+             isValidTimestampField(data.updatedAt);
+    }
+
+    function isValidSleepSession(data, userId) {
+      return data.userId is string && data.userId == userId && data.userId.size() <= 128 &&
+             isValidDateIso(data.dateIso) &&
+             data.source is string && data.source.size() >= 1 && data.source.size() <= 48 &&
+             data.totalDurationMinutes is int && data.totalDurationMinutes >= 1 && data.totalDurationMinutes <= 1440 &&
+             data.remMinutes is int && data.remMinutes >= 0 && data.remMinutes <= 1440 &&
+             data.deepMinutes is int && data.deepMinutes >= 0 && data.deepMinutes <= 1440 &&
+             data.lightMinutes is int && data.lightMinutes >= 0 && data.lightMinutes <= 1440 &&
+             data.awakeMinutes is int && data.awakeMinutes >= 0 && data.awakeMinutes <= 1440 &&
+             (!('restingHeartRateBpm' in data) || (data.restingHeartRateBpm is int && data.restingHeartRateBpm >= 25 && data.restingHeartRateBpm <= 220)) &&
+             data.bedtimeMillis is int && data.bedtimeMillis >= 0 &&
+             data.wakeTimeMillis is int && data.wakeTimeMillis >= 0 &&
+             data.syncedAtMillis is int && data.syncedAtMillis >= 0 &&
+             isValidTimestampField(data.createdAt) &&
+             isValidTimestampField(data.updatedAt);
+    }
+
+    function isValidAiReport(data, userId) {
+      return data.userId is string && data.userId == userId && data.userId.size() <= 128 &&
+             data.scopeKey is string && data.scopeKey.size() >= 1 && data.scopeKey.size() <= 64 &&
+             isValidDateIso(data.dateIso) &&
+             data.providerUsed is string && data.providerUsed.size() >= 1 && data.providerUsed.size() <= 64 &&
+             data.modelUsed is string && data.modelUsed.size() >= 1 && data.modelUsed.size() <= 128 &&
+             data.severityRating is string && data.severityRating.size() >= 1 && data.severityRating.size() <= 32 &&
+             data.biologicalMechanism is string && data.biologicalMechanism.size() <= 4000 &&
+             data.mitigationTipsJson is string && data.mitigationTipsJson.size() <= 4000 &&
+             data.createdAtMillis is int && data.createdAtMillis >= 0 &&
+             isValidTimestampField(data.createdAt) &&
+             isValidTimestampField(data.updatedAt);
+    }
+
+    match /users/{userId}/substance_logs/{logId} {
+      allow get: if isOwner(userId) && isValidId(logId);
+      allow list: if isOwner(userId);
+
+      allow create: if isOwner(userId) &&
+                       isValidId(logId) &&
+                       incoming().keys().hasAll([
+                         'userId', 'localId', 'dateIso', 'substanceId', 'substanceName',
+                         'category', 'dosageAmount', 'dosageUnit', 'takenAtMillis',
+                         'halfLifeHours', 'disruptionWeight', 'notes', 'updatedAtMillis',
+                         'createdAt', 'updatedAt'
+                       ]) &&
+                       incoming().keys().hasOnly([
+                         'userId', 'localId', 'dateIso', 'substanceId', 'substanceName',
+                         'category', 'dosageAmount', 'dosageUnit', 'takenAtMillis',
+                         'halfLifeHours', 'disruptionWeight', 'notes', 'updatedAtMillis',
+                         'createdAt', 'updatedAt'
+                       ]) &&
+                       isValidSubstanceLog(incoming(), userId);
+
+      allow update: if isOwner(userId) &&
+                       isValidId(logId) &&
+                       isValidSubstanceLog(incoming(), userId) &&
+                       incoming().userId == existing().userId &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().diff(existing()).affectedKeys().hasOnly([
+                         'localId', 'dateIso', 'substanceId', 'substanceName',
+                         'category', 'dosageAmount', 'dosageUnit', 'takenAtMillis',
+                         'halfLifeHours', 'disruptionWeight', 'notes', 'updatedAtMillis',
+                         'updatedAt'
+                       ]);
+
+      allow delete: if isOwner(userId) && isValidId(logId);
+    }
+
+    match /users/{userId}/sleep_sessions/{sessionId} {
+      allow get: if isOwner(userId) && isValidId(sessionId);
+      allow list: if isOwner(userId);
+
+      allow create: if isOwner(userId) &&
+                       isValidId(sessionId) &&
+                       incoming().keys().hasAll([
+                         'userId', 'dateIso', 'source', 'totalDurationMinutes',
+                         'remMinutes', 'deepMinutes', 'lightMinutes', 'awakeMinutes',
+                         'bedtimeMillis', 'wakeTimeMillis', 'syncedAtMillis',
+                         'createdAt', 'updatedAt'
+                       ]) &&
+                       incoming().keys().hasOnly([
+                         'userId', 'dateIso', 'source', 'totalDurationMinutes',
+                         'remMinutes', 'deepMinutes', 'lightMinutes', 'awakeMinutes',
+                         'restingHeartRateBpm', 'bedtimeMillis', 'wakeTimeMillis',
+                         'syncedAtMillis', 'createdAt', 'updatedAt'
+                       ]) &&
+                       isValidSleepSession(incoming(), userId);
+
+      allow update: if isOwner(userId) &&
+                       isValidId(sessionId) &&
+                       isValidSleepSession(incoming(), userId) &&
+                       incoming().userId == existing().userId &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().diff(existing()).affectedKeys().hasOnly([
+                         'dateIso', 'source', 'totalDurationMinutes',
+                         'remMinutes', 'deepMinutes', 'lightMinutes', 'awakeMinutes',
+                         'restingHeartRateBpm', 'bedtimeMillis', 'wakeTimeMillis',
+                         'syncedAtMillis', 'updatedAt'
+                       ]);
+
+      allow delete: if isOwner(userId) && isValidId(sessionId);
+    }
+
+    match /users/{userId}/ai_reports/{reportId} {
+      allow get: if isOwner(userId) && isValidId(reportId);
+      allow list: if isOwner(userId);
+
+      allow create: if isOwner(userId) &&
+                       isValidId(reportId) &&
+                       incoming().keys().hasAll([
+                         'userId', 'scopeKey', 'dateIso', 'providerUsed', 'modelUsed',
+                         'severityRating', 'biologicalMechanism', 'mitigationTipsJson',
+                         'createdAtMillis', 'createdAt', 'updatedAt'
+                       ]) &&
+                       incoming().keys().hasOnly([
+                         'userId', 'scopeKey', 'dateIso', 'providerUsed', 'modelUsed',
+                         'severityRating', 'biologicalMechanism', 'mitigationTipsJson',
+                         'createdAtMillis', 'createdAt', 'updatedAt'
+                       ]) &&
+                       isValidAiReport(incoming(), userId);
+
+      allow update: if isOwner(userId) &&
+                       isValidId(reportId) &&
+                       isValidAiReport(incoming(), userId) &&
+                       incoming().userId == existing().userId &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().diff(existing()).affectedKeys().hasOnly([
+                         'scopeKey', 'dateIso', 'providerUsed', 'modelUsed',
+                         'severityRating', 'biologicalMechanism', 'mitigationTipsJson',
+                         'createdAtMillis', 'updatedAt'
+                       ]);
+
+      allow delete: if isOwner(userId) && isValidId(reportId);
+    }
+  }
+}

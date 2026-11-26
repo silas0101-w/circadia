@@ -74,9 +74,16 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.example.data.local.SubstanceLogEntity
+import com.example.data.remote.HalfLifeSource
+import com.example.data.remote.OpenFdaPharmacokinetics
+import com.example.data.remote.RemoteMedicationItem
+import com.example.data.repository.MedicationSearchResult
 import com.example.data.repository.ParsedAiReport
 import com.example.domain.DateTimeUtils
+import com.example.domain.DecayModelMode
 import com.example.domain.PharmacokineticsEngine
+import com.example.domain.SubstanceCatalog
+import com.example.domain.SubstanceCategory
 import com.example.ui.AiAnalysisUiState
 import com.example.ui.HistoryUiState
 import com.example.ui.UndoEvent
@@ -87,6 +94,7 @@ import com.example.ui.components.CircadiaSnackbarHost
 import com.example.ui.components.ConfirmDeleteDialog
 import com.example.ui.components.HistoryTrendChart
 import com.example.ui.components.LogSubstanceSheet
+import com.example.ui.components.MultiSeriesConcentrationChart
 import com.example.ui.components.SleepStageBar
 import com.example.ui.components.SubstanceEntryCard
 import com.example.ui.components.colorForSeverity
@@ -127,6 +135,16 @@ fun HistoryScreen(
     onAnalyzeEntry: (SubstanceLogEntity, Boolean) -> Unit,
     onShowSavedReport: (ParsedAiReport) -> Unit,
     onDismissAiSheet: () -> Unit,
+    onOpenSettings: () -> Unit = {},
+    onSelectDecayModel: (DecayModelMode) -> Unit = {},
+    onRefreshDay: () -> Unit = { onAnalyzeSelectedDay(false) },
+    onRefreshEntry: (SubstanceLogEntity) -> Unit = { onAnalyzeEntry(it, false) },
+    onSearchMedications: suspend (String, SubstanceCategory?) -> MedicationSearchResult = { q, cat ->
+        MedicationSearchResult(SubstanceCatalog.search(q, cat), emptyList(), false, false)
+    },
+    onResolveMedicationPk: suspend (RemoteMedicationItem) -> OpenFdaPharmacokinetics = {
+        OpenFdaPharmacokinetics(5.0, 45, null, HalfLifeSource.ESTIMATED)
+    },
     modifier: Modifier = Modifier
 ) {
     var showLogSheet by remember { mutableStateOf(false) }
@@ -525,6 +543,27 @@ fun HistoryScreen(
                 }
             }
 
+            // Selected Day Multi-Series Concentration Curve
+            if (uiState.selectedLogs.isNotEmpty()) {
+                item(key = "selected_day_concentration_chart") {
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .animateItem()
+                    ) {
+                        Box(modifier = Modifier.padding(16.dp)) {
+                            MultiSeriesConcentrationChart(
+                                chartModel = uiState.selectedConcentrationChart,
+                                nowMillis = uiState.selectedNowMillis,
+                                onSelectDecayModel = onSelectDecayModel
+                            )
+                        }
+                    }
+                }
+            }
+
             // Synced Sleep Session for Selected Date (if any)
             uiState.selectedSleepSession?.let { sleep ->
                 item(key = "selected_day_sleep") {
@@ -696,6 +735,10 @@ fun HistoryScreen(
                         onDeleteClick = {
                             pendingDeleteEntry = info.entry
                         },
+                        concentrationSeries = uiState.entryConcentrationSeries[entryId],
+                        bedtimeMillis = uiState.selectedSummary.bedtimeMillis,
+                        nowMillis = uiState.selectedNowMillis,
+                        decayModel = uiState.settings.decayModelMode,
                         modifier = Modifier.animateItem()
                     )
                 }
@@ -712,7 +755,10 @@ fun HistoryScreen(
             initialDateIso = editingEntry?.dateIso ?: uiState.selectedDateIso,
             existingEntriesByDate = uiState.entriesByDate,
             targetBedtimeMinutes = uiState.settings.targetBedtimeMinutes,
+            decayModelMode = uiState.settings.decayModelMode,
             editingEntry = editingEntry,
+            onSearchMedications = onSearchMedications,
+            onResolveMedicationPk = onResolveMedicationPk,
             onDismiss = { showLogSheet = false },
             onRequestDelete = { toDelete ->
                 showLogSheet = false
@@ -779,10 +825,11 @@ fun HistoryScreen(
             if (scopeKey.startsWith("entry:")) {
                 val id = scopeKey.removePrefix("entry:").toLongOrNull()
                 val match = uiState.selectedLogs.find { it.id == id }
-                if (match != null) onAnalyzeEntry(match, false)
+                if (match != null) onRefreshEntry(match)
             } else {
-                onAnalyzeSelectedDay(false)
+                onRefreshDay()
             }
-        }
+        },
+        onOpenSettings = onOpenSettings
     )
 }
